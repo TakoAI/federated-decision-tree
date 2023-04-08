@@ -1,11 +1,14 @@
+# Federated Distribution Tree
+
 # Dependencies
 import pandas as pd
 import numpy as np
 from collections import Counter
+from fbd import FBD
 
 class FDTRoot:
     """
-    Class for hosting the branches for a federated decision tree
+    Class for hosting the branches for a federated distribution tree
     """
     def __init__(
         self,
@@ -14,10 +17,11 @@ class FDTRoot:
         n: int,
         node_type: str,
         rule: str,
-        algo_type: str = "classification",
+        algo_type: str = "classification", # classificatin | regression | bayes
         counts: Counter = None,
         yhat: float = None,
-        ystd: float = None
+        ystd: float = None,
+        fbd: FBD = None
     ):
         self.depth = depth
         self.features = features
@@ -25,13 +29,10 @@ class FDTRoot:
         self.node_type = node_type
         self.algo_type = algo_type
         self.rule = rule
-        if algo_type == "classification":
-            self.counts = counts
-            self.yhat = self.Counter_dominatant(counts)
-        else:
-            self.counts = None
-            self.yhat = yhat
+        self.counts = counts
+        self.yhat = yhat
         self.ystd = ystd
+        self.fbd = fbd
         self.branches = None
 
     @staticmethod
@@ -40,10 +41,9 @@ class FDTRoot:
         Sorting the counts and saving the final prediction of the node
         """
         counts_sorted = list(sorted(counts.items(), key=lambda item: item[1]))
-        yhat = None
         if len(counts_sorted) > 0:
-            yhat = counts_sorted[-1][0]
-        return yhat
+            return counts_sorted[-1][0]
+        return None
 
     def print_info(self, width = 4):
         """
@@ -73,7 +73,7 @@ class FDTRoot:
 
     def get_stats(self):
         """
-        Return statistics of the federated decision tree
+        Return statistics of the federated distribution tree
         """
         if self.branches is not None:
             count = 0
@@ -86,22 +86,22 @@ class FDTRoot:
         else:
             return {"count": 1}
 
-    def predict(self, X:pd.DataFrame):
+    def predict(self, X: pd.DataFrame):
         """
         Batch prediction method
         """
         predictions = []
 
         for _, x in X.iterrows():
-            values = {}
-            for feature in self.features:
-                values.update({feature: x[feature]})
-
-            predictions.append(self.predict_obs(values))
+            if self.algo_type == "bayes":
+                pred = self.predict_one(x)
+                predictions.append(max(pred, key=pred.get))
+            else:
+                predictions.append(self.predict_obs(x))
 
         return predictions
 
-    def predict_obs(self, values: dict) -> int:
+    def predict_obs(self, values: pd.Series) -> int:
         """
         Method to predict the class given a set of features
         """
@@ -112,7 +112,7 @@ class FDTRoot:
                 best_feature = branch.feature
                 best_value = branch.value
 
-                if (values.get(best_feature) < best_value):
+                if (values[best_feature] < best_value):
                     y_pred = branch.left.predict_obs(values)
                 else:
                     y_pred = branch.right.predict_obs(values)
@@ -131,27 +131,70 @@ class FDTRoot:
                 return np.mean(node_arr)
         else:
             return self.yhat
+        
+    def predict_one(self, values: pd.Series) -> dict:
+        """
+        Method to predict the class vs expectation given a set of features
+        """
+        if self.branches:
+            node_map = {}
+            for branch in self.branches:
+                best_feature = branch.feature
+                best_value = branch.value
+                
+                if (values[best_feature] < best_value):
+                    pred = branch.left.predict_one(values)
+                else:
+                    pred = branch.right.predict_one(values)
+                
+                for k in pred:
+                    if k in node_map:
+                        node_map[k] += pred[k]
+                    else:
+                        node_map[k] = pred[k]
+            return node_map
+        if self.fbd:
+            return self.fbd.predict_one(values)
+        return {}
 
     def merge(self, tree):
         """
-        Merge another federated decision tree to support federated learning
+        Merge another federated distribution tree to support federated learning
         """
         if self.algo_type == "classification":
             self.counts.update(tree.counts)
             self.yhat = self.Counter_dominatant(self.counts)
-        else:
+        elif self.algo_type == "regression":
             self.yhat = (self.n * self.yhat + tree.n * tree.yhat) / (self.n + tree.n)
+        elif self.algo_type == "bayes":
+            self.fbd.merge(tree.fbd)
         if self.branches and tree.branches:
             for t in tree.branches:
                 no_match = True
                 for s in self.branches:
                     if s.feature == t.feature and s.direct == t.direct:
-                        diff2_left = (s.left.yhat - t.left.yhat) ** 2
-                        dstd2_left = s.left.ystd ** 2 + t.left.ystd ** 2
-                        diff2_right = (s.right.yhat - t.right.yhat) ** 2
-                        dstd2_right = s.right.ystd ** 2 + t.right.ystd ** 2
-                        if self.algo_type == "classification" or (diff2_left < dstd2_left and diff2_right < dstd2_right):
+                        if self.algo_type == "classification":
                             no_match = False
+                            s.left.merge(t.left)
+                            s.right.merge(t.right)
+                            new_count = s.n + t.n
+                            s.n = new_count
+                        elif self.algo_type == "regression":
+                            diff2_left = (s.left.yhat - t.left.yhat) ** 2
+                            dstd2_left = s.left.ystd ** 2 + t.left.ystd ** 2
+                            diff2_right = (s.right.yhat - t.right.yhat) ** 2
+                            dstd2_right = s.right.ystd ** 2 + t.right.ystd ** 2
+                            if diff2_left < dstd2_left and diff2_right < dstd2_right:
+                                s.left.merge(t.left)
+                                s.right.merge(t.right)
+                                no_match = False
+                                new_count = s.n + t.n
+                                s.value = (s.n * s.value + t.n * t.value) / new_count
+                                s.n = new_count
+                        elif self.algo_type == "bayes":
+                            no_match = False
+                            s.left.merge(t.left)
+                            s.right.merge(t.right)
                             new_count = s.n + t.n
                             s.value = (s.n * s.value + t.n * t.value) / new_count
                             s.n = new_count
@@ -162,7 +205,7 @@ class FDTRoot:
 
 class FDTBranch:
     """
-    Class for creating the decision for a federated decision tree
+    Class for creating the decision for a federated distribution tree
     """
     def __init__(
         self,
@@ -182,12 +225,10 @@ class FDTBranch:
 
 class FDT:
     """
-    Class for creating the tree for a federated decision tree
+    Class for creating the tree for a federated distribution tree
     """
     def __init__(
         self,
-        X: pd.DataFrame,
-        Y: list,
         min_samples_split = None,
         max_depth = None,
         depth = None,
@@ -195,26 +236,6 @@ class FDT:
         rule = None,
         algo_type: str = "classification"
     ):
-        # Saving the data to the node
-        self.X = X
-        self.Y = Y
-
-        # Extracting all the features
-        self.features = list(self.X.columns)
-
-        # Calculating the counts of Y in the node
-        if algo_type == "classification":
-            self.counts = Counter(Y)
-            self.yhat = None
-        else:
-            self.counts = None
-            self.yhat = np.mean(Y)
-
-        self.ystd = np.std(Y)
-
-        # Saving the number of observations in the node
-        self.n = len(Y)
-
         # Saving the hyper parameters
         self.min_samples_split = min_samples_split if min_samples_split else 20
         self.max_depth = max_depth if max_depth else 5
@@ -281,6 +302,24 @@ class FDT:
         Function to calculate the mean square error
         """
         return self.MSE_loss(self.Y, np.mean(self.Y))
+    
+    @staticmethod
+    def FBD_loss(X, Y):
+        tfbd = FBD().fit(X, Y)
+        return FDT.GINI_impurity(Counter(tfbd.predict(X) == np.array(Y)))
+    
+    def get_FBDLoss(self):
+        return self.GINI_impurity(Counter(self.fbd.predict(self.X) == np.array(self.Y)))
+    
+    def get_Loss(self):
+        # GINI impurity
+        if self.algo_type == "classification":
+            return self.get_GINI()
+        elif self.algo_type == "regression":
+            return self.get_MSE()
+        elif self.algo_type == "bayes":
+            return self.get_FBDLoss()
+        return 0.0
 
     def best_split(self) -> tuple:
         """
@@ -289,12 +328,9 @@ class FDT:
         # Creating a dataset for spliting
         df = self.X.copy()
         df['Y'] = self.Y
-
-        # Getting the GINI impurity for the base input
-        if self.algo_type == "classification":
-            loss_base = self.get_GINI()
-        else:
-            loss_base = self.get_MSE()
+        
+        # Getting the loss for the base input
+        loss_base = self.get_Loss()
 
         # Finding which split yields the best GINI gain
         max_gain = 0
@@ -313,8 +349,12 @@ class FDT:
 
             for value in xmeans:
                 # Spliting the dataset
-                left_y = Xdf[Xdf[feature]<value]['Y']
-                right_y = Xdf[Xdf[feature]>=value]['Y']
+                left_df = Xdf[Xdf[feature]<value]
+                left_x = left_df[self.features]
+                left_y = left_df['Y']
+                right_df = Xdf[Xdf[feature]>=value]
+                right_x = right_df[self.features]
+                right_y = right_df['Y']
 
                 # Getting the obs count from the left and the right data splits
                 n_left = len(left_y)
@@ -324,10 +364,13 @@ class FDT:
                     # Getting the left and right gini impurities
                     loss_left = self.GINI_impurity(Counter(left_y))
                     loss_right = self.GINI_impurity(Counter(right_y))
-                else:
+                elif self.algo_type == "regression":
                     # Getting the left and right mse loss
                     loss_left = self.MSE_loss(left_y, np.mean(left_y))
                     loss_right = self.MSE_loss(right_y, np.mean(right_y))
+                elif self.algo_type == "bayes":
+                    loss_left = self.FBD_loss(left_x, left_y)
+                    loss_right = self.FBD_loss(right_x, right_y)
 
                 # Calculating the weighted loss
                 wloss_left = n_left / (n_left + n_right) * loss_left
@@ -347,11 +390,55 @@ class FDT:
                     max_gain = gain
 
         return (best_feature, best_value, best_direction)
+    
+    def init_paras(
+        self,
+        X: pd.DataFrame,
+        Y: list
+    ):
+        """
+        Initialize the parameters of the tree
+        """
+        # Saving the data to the node
+        self.X = X
+        self.Y = Y
 
-    def grow_tree(self):
+        # Extracting all the features
+        self.features = list(self.X.columns)
+
+        # Init None variables
+        self.counts = None
+        self.yhat = None
+        self.ystd = None
+        self.fbd = None
+        
+        # Calculating the counts of Y in the node
+        if self.algo_type == "classification":
+            self.counts = Counter(Y)
+            self.yhat = FDTRoot.Counter_dominatant(self.counts)
+        
+        # Federated bayes decision
+        if self.algo_type == "bayes":
+            self.fbd = FBD().fit(X, Y)
+
+        # Regression
+        if self.algo_type == "regression":
+            self.yhat = np.mean(Y)
+            self.ystd = np.std(Y)
+
+        # Saving the number of observations in the node
+        self.n = len(Y)
+
+    def fit(
+        self,
+        X: pd.DataFrame,
+        Y: list
+    ) -> FDTRoot:
         """
-        Recursive method to create the federated decision tree
+        Recursive method to create the federated distribution tree
         """
+        self.init_paras(X, Y)
+        
         # Making a df from the data
         df = self.X.copy()
         df['Y'] = self.Y
@@ -364,7 +451,8 @@ class FDT:
             algo_type = self.algo_type,
             counts = self.counts,
             yhat = self.yhat,
-            ystd = self.ystd
+            ystd = self.ystd,
+            fbd = self.fbd
         )
 
         # If there is GINI to be gained, we split further
@@ -381,26 +469,28 @@ class FDT:
 
                 # Creating the left and right nodes
                 left = FDT(
-                    left_df[self.features],
-                    left_df['Y'].values.tolist(),
                     depth = self.depth + 1,
                     max_depth = self.max_depth,
                     min_samples_split = self.min_samples_split,
                     node_type = left_type,
                     rule = f"{best_feature} <= {round(best_value, 3)}",
                     algo_type = self.algo_type
-                ).grow_tree()
+                ).fit(
+                    left_df[self.features],
+                    left_df['Y'].values.tolist()
+                )
 
                 right = FDT(
-                    right_df[self.features],
-                    right_df['Y'].values.tolist(),
                     depth = self.depth + 1,
                     max_depth = self.max_depth,
                     min_samples_split = self.min_samples_split,
                     node_type = right_type,
                     rule = f"{best_feature} > {round(best_value, 3)}",
                     algo_type = self.algo_type
-                ).grow_tree()
+                ).fit(
+                    right_df[self.features],
+                    right_df['Y'].values.tolist()
+                )
 
                 # Create the FDT branch
                 result.branches = [FDTBranch(
