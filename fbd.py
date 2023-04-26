@@ -3,7 +3,6 @@
 # Dependencies
 import pandas as pd
 import numpy as np
-import math
 
 class FBD:
     """
@@ -67,7 +66,7 @@ class FBD:
     def predict_one(self, X1):
         return {
             k: self.values[k][2] * self.probability_one(X1, self.values[k][0], self.values[k][1]) for k in self.values
-        }        
+        }
     
     @staticmethod
     def weightedAvg(v1, c1, v2, c2):
