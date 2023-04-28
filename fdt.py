@@ -222,6 +222,7 @@ class FDT:
     def __init__(
         self,
         min_samples_split = None,
+        min_samples_leaf = None,
         max_depth = None,
         depth = None,
         node_type = None,
@@ -230,6 +231,7 @@ class FDT:
     ):
         # Saving the hyper parameters
         self.min_samples_split = min_samples_split if min_samples_split else 20
+        self.min_samples_leaf = min_samples_leaf if min_samples_leaf else 10
         self.max_depth = max_depth if max_depth else 5
 
         # Default current depth of node
@@ -330,7 +332,7 @@ class FDT:
             # Sorting the values and getting the rolling average
             xmeans = self.ma(Xdf[feature].unique(), 2)
 
-            for value in xmeans:
+            for value in xmeans[self.min_samples_leaf - 1: len(xmeans) - self.min_samples_leaf + 1]:
                 # Spliting the dataset
                 left_df = Xdf[Xdf[feature]<value]
                 left_x = left_df[self.features]
@@ -451,6 +453,7 @@ class FDT:
                     depth = self.depth + 1,
                     max_depth = self.max_depth,
                     min_samples_split = self.min_samples_split,
+                    min_samples_leaf = self.min_samples_leaf,
                     node_type = left_type,
                     rule = f"{best_feature} <= {round(best_value, 3)}",
                     algo_type = self.algo_type
@@ -463,6 +466,7 @@ class FDT:
                     depth = self.depth + 1,
                     max_depth = self.max_depth,
                     min_samples_split = self.min_samples_split,
+                    min_samples_leaf = self.min_samples_leaf,
                     node_type = right_type,
                     rule = f"{best_feature} > {round(best_value, 3)}",
                     algo_type = self.algo_type
