@@ -49,13 +49,10 @@ class FBD:
             hk = 0
             hv = 0
             for k in kp:
-                try:
-                    if kp[k][i] > hv:
-                        hk = k
-                        hv = kp[k][i]
-                except:
-                    print(kp, k, i)
-                    asdffds
+                tv = kp[k][i]
+                if tv > hv:
+                    hk = k
+                    hv = tv
             yp.append(hk)
         return yp
     

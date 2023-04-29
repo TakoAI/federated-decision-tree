@@ -3,7 +3,6 @@
 # Dependencies
 import pandas as pd
 import numpy as np
-from collections import Counter
 from fbd import FBD
 from flr import FLR
 
@@ -19,7 +18,7 @@ class FDTNode:
         node_type: str,
         rule: str,
         algo_type: str = "classification", # classificatin | regression | bayes | linear
-        counts: Counter = None,
+        counts: dict = None,
         yhat: float = None,
         ystd: float = None,
         fbd: FBD = None,
@@ -39,13 +38,17 @@ class FDTNode:
         self.branches = None
 
     @staticmethod
-    def Counter_dominatant(counts: Counter) -> int:
+    def Counter(arr):
+        c = np.unique(arr, return_counts=True)
+        return {c[0][i]:c[1][i] for i in range(len(c[0]))}
+
+    @staticmethod
+    def Counter_dominatant(counts: dict[int, int]) -> int:
         """
         Sorting the counts and saving the final prediction of the node
         """
-        counts_sorted = list(sorted(counts.items(), key=lambda item: item[1]))
-        if len(counts_sorted) > 0:
-            return counts_sorted[-1][0]
+        if counts:
+            return max(counts, key=counts.get)
         return None
 
     def print_info(self, width = 4):
@@ -123,7 +126,7 @@ class FDTNode:
                     node_map[y_pred] += branch.n
                 else:
                     node_map[y_pred] = branch.n
-            return self.Counter_dominatant(Counter(node_map))
+            return self.Counter_dominatant(node_map)
         return self.yhat
         
     def predict_bayes(self, values: pd.Series) -> dict:
@@ -250,19 +253,19 @@ class FDT:
         self.tree = None
 
     @staticmethod
-    def ma(x: np.array, window: int) -> np.array:
+    def ma(x: np.array) -> np.array:
         """
         Calculates the moving average of the given list.
         """
-        return np.convolve(x, np.ones(window), 'valid') / window
+        return (x[1:] + x[:-1]) / 2
 
     @staticmethod
-    def GINI_impurity(counts: Counter) -> float:
+    def GINI_impurity(counts: dict[int, int]) -> float:
         """
         Given the observations of a multi class calculate the GINI impurity
         """
         # multi class calculation from Counter
-        multi_count = [i[1] for i in counts.items()]
+        multi_count = counts.values()
         n = sum(multi_count)
         gini = 1 - sum([(i / n) ** 2 for i in multi_count])
         
@@ -287,7 +290,7 @@ class FDT:
     @staticmethod
     def FBD_loss(X, Y):
         tfbd = FBD().fit(X, Y)
-        return FDT.GINI_impurity(Counter(tfbd.predict(X) == np.array(Y)))
+        return FDT.GINI_impurity(FDTNode.Counter(tfbd.predict(X) == np.array(Y)))
     
     @staticmethod
     def FLR_loss(X, Y):
@@ -301,7 +304,7 @@ class FDT:
         elif self.algo_type == "regression":
             return self.MSE_loss(Y, self.yhat)
         elif self.algo_type == "bayes":
-            return self.GINI_impurity(Counter(self.fbd.predict(X) == np.array(Y)))
+            return self.GINI_impurity(FDTNode.Counter(self.fbd.predict(X) == np.array(Y)))
         elif self.algo_type == "linear":
             return self.MSE_loss(Y, self.flr.predict(X))
         return 0.0
@@ -326,19 +329,15 @@ class FDT:
         best_direction = None
 
         for feature in self.features:
-            # Droping missing values
-            Xdf = df.dropna().sort_values(feature)
 
             # Sorting the values and getting the rolling average
-            xmeans = self.ma(Xdf[feature].unique(), 2)
+            xmeans = self.ma(np.sort(df[feature].unique()))
 
             for value in xmeans[self.min_samples_leaf - 1: len(xmeans) - self.min_samples_leaf + 1]:
                 # Spliting the dataset
-                left_df = Xdf[Xdf[feature]<value]
-                left_x = left_df[self.features]
+                left_df = df[df[feature] < value]
                 left_y = left_df['Y']
-                right_df = Xdf[Xdf[feature]>=value]
-                right_x = right_df[self.features]
+                right_df = df[df[feature] >= value]
                 right_y = right_df['Y']
 
                 # Getting the obs count from the left and the right data splits
@@ -347,16 +346,20 @@ class FDT:
 
                 if self.algo_type == "classification":
                     # Getting the left and right gini impurities
-                    loss_left = self.GINI_impurity(Counter(left_y))
-                    loss_right = self.GINI_impurity(Counter(right_y))
+                    loss_left = self.GINI_impurity(FDTNode.Counter(left_y))
+                    loss_right = self.GINI_impurity(FDTNode.Counter(right_y))
                 elif self.algo_type == "regression":
                     # Getting the left and right mse loss
                     loss_left = self.MSE_loss(left_y, np.mean(left_y))
                     loss_right = self.MSE_loss(right_y, np.mean(right_y))
                 elif self.algo_type == "bayes":
+                    left_x = left_df[self.features]
+                    right_x = right_df[self.features]
                     loss_left = self.FBD_loss(left_x, left_y)
                     loss_right = self.FBD_loss(right_x, right_y)
                 elif self.algo_type == "linear":
+                    left_x = left_df[self.features]
+                    right_x = right_df[self.features]
                     loss_left = self.FLR_loss(left_x, left_y)
                     loss_right = self.FLR_loss(right_x, right_y)
 
@@ -399,7 +402,7 @@ class FDT:
         
         # Calculating the counts of Y in the node
         if self.algo_type == "classification":
-            self.counts = Counter(Y)
+            self.counts = FDTNode.Counter(Y)
             self.yhat = FDTNode.Counter_dominatant(self.counts)
         
         # Federated bayes decision
